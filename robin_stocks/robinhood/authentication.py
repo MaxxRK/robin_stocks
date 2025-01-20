@@ -231,12 +231,12 @@ def _validate_sherrif_id(device_token:str, workflow_id:str, use_app=False):
         prompt_url = f"https://api.robinhood.com/push/{challenge_id}/get_prompts_status/"
         prompt_status = request_get(prompt_url)
         if prompt_type == "prompt" and use_app:
-            for i in range(5):
+            for i in range(12):
                 prompt_status = request_get(prompt_url)
                 if prompt_status["challenge_status"] == "validated":
                     print("Prompt was validated.")
                     break
-                elif i == 4:
+                elif i == 11:
                     raise Exception ("User response timeout... Challenge not validated.")
                 else:
                     print("Waiting for user to accept prompt message in app.")
