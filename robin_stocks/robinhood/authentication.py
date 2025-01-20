@@ -4,6 +4,7 @@ import os
 import pickle
 import random
 
+from time import sleep
 from robin_stocks.robinhood.helper import *
 from robin_stocks.robinhood.urls import *
 
@@ -50,7 +51,7 @@ def respond_to_challenge(challenge_id, sms_code):
     return(request_post(url, payload))
 
 
-def login(username=None, password=None, expiresIn=86400, scope='internal', by_sms=True, store_session=True, mfa_code=None, pickle_path="", pickle_name=""):
+def login(username=None, password=None, expiresIn=86400, scope='internal', by_sms=True, store_session=True, mfa_code=None, use_app=False, pickle_path="", pickle_name=""):
     """This function will effectively log the user into robinhood by getting an
     authentication token and saving it to the session header. By default, it
     will store the authentication token in a pickle file and load that value
@@ -187,7 +188,7 @@ def login(username=None, password=None, expiresIn=86400, scope='internal', by_sm
             data = request_post(url, payload)
         elif 'verification_workflow' in data:
             workflow_id = data['verification_workflow']['id']
-            _validate_sherrif_id(device_token=device_token, workflow_id=workflow_id, mfa_code=mfa_code)
+            _validate_sherrif_id(device_token=device_token, workflow_id=workflow_id, use_app=use_app)
             data = request_post(url, payload)
         # Update Session data with authorization or raise exception with the information present in data.
         if 'access_token' in data:
@@ -210,9 +211,10 @@ def login(username=None, password=None, expiresIn=86400, scope='internal', by_sm
         raise Exception('Error: Trouble connecting to robinhood API. Check internet connection.')
     return(data)
 
-def _validate_sherrif_id(device_token:str, workflow_id:str,mfa_code:str):
-    if mfa_code == None:
-        mfa_code = input("Please type in the MFA code: ")
+def _validate_sherrif_id(device_token:str, workflow_id:str, use_app=False):
+    # Robinhood seems to not be allowing 2fa by this method at the moment?
+    #if mfa_code == None:
+        #mfa_code = input("Please type in the MFA code: ")
 
     url = "https://api.robinhood.com/pathfinder/user_machine/"
     payload = {
@@ -225,20 +227,43 @@ def _validate_sherrif_id(device_token:str, workflow_id:str,mfa_code:str):
         inquiries_url = f"https://api.robinhood.com/pathfinder/inquiries/{data['id']}/user_view/"
         res = request_get(inquiries_url)
         challenge_id=res['type_context']["context"]["sheriff_challenge"]["id"]
-        challenge_url = f"https://api.robinhood.com/challenge/{challenge_id}/respond/"
-        challenge_payload = {
-            'response': mfa_code
-        }
-        challenge_response = request_post(url=challenge_url, payload=challenge_payload,json=True )
-        if challenge_response["status"] == "validated":
-            inquiries_payload = {"sequence":0,"user_input":{"status":"continue"}}
-            inquiries_response = request_post(url=inquiries_url, payload=inquiries_payload,json=True )
-            if inquiries_response["type_context"]["result"] == "workflow_status_approved":
-                return
-            else:
-                raise Exception("workflow status  not approved")    
+        prompt_type=res['type_context']["context"]["sheriff_challenge"]["type"]
+        prompt_url = f"https://api.robinhood.com/push/{challenge_id}/get_prompts_status/"
+        prompt_status = request_get(prompt_url)
+        if prompt_type == "prompt" and use_app:
+            for i in range(5):
+                prompt_status = request_get(prompt_url)
+                if prompt_status["challenge_status"] == "validated":
+                    print("Prompt was validated.")
+                    break
+                elif i == 4:
+                    raise Exception ("User response timeout... Challenge not validated.")
+                else:
+                    print("Waiting for user to accept prompt message in app.")
+                    sleep(5)
+        elif not use_app:
+            fallback_payload = {"sequence":0,"user_input":{"status":"fallback"}}
+            fallback_response = request_post(url=inquiries_url, payload=fallback_payload,json=True )
+            if fallback_response['type_context']["context"]["sheriff_challenge"]["type"] == "sms":
+                challenge_id = fallback_response['type_context']["context"]["sheriff_challenge"]["id"]
+                print("Successfully switched to sms validation. Please check your phone for the code.")
+                fallback_code = input("Input 2fa sent to phone: ")
+                challenge_url = f"https://api.robinhood.com/challenge/{challenge_id}/respond/"
+                challenge_payload = {
+                    'response': fallback_code
+                }
+                challenge_response = request_post(url=challenge_url, payload=challenge_payload,json=True )
+                print(challenge_response)
+                if challenge_response.get("status") == "validated":
+                    print("Challenge was validated.")
+                else:
+                    raise Exception("Challenge not validated.")
+        inquiries_payload = {"sequence":0,"user_input":{"status":"continue"}}
+        inquiries_response = request_post(url=inquiries_url, payload=inquiries_payload,json=True )
+        if inquiries_response["type_context"]["result"] == "workflow_status_approved":
+            return
         else:
-            raise Exception("Challenge not validated")
+            raise Exception("workflow status  not approved")
     raise Exception("Id not returned in user-machine call")
 
 def _get_sherrif_challenge(token_id:str):
